@@ -68,14 +68,30 @@ resource "postgresql_role" "postgrest_superuser" {
   depends_on = [postgresql_database.postgrest]
 }
 
+resource "postgresql_role" "web_anon" {
+  name     = "web_anon"
+  login    = false
+  depends_on = [postgresql_database.postgrest]
+}
+
+resource "postgresql_grant" "web_anon_schema_usage" {
+  database    = postgresql_database.postgrest.name
+  role        = postgresql_role.web_anon.name
+  schema      = "public"
+  object_type = "schema"
+  privileges  = ["USAGE"]
+}
+
 provider "kubernetes" {
-  config_path = "~/.kube/config"
+  config_path = pathexpand("~/.kube/config")
 }
 
 resource "kubernetes_namespace" "postgrest" {
   metadata {
     name = "postgrest"
   }
+
+  depends_on = [terraform_data.k3d_cluster]
 }
 
 resource "kubernetes_secret" "postgrest_db" {
@@ -85,11 +101,167 @@ resource "kubernetes_secret" "postgrest_db" {
   }
 
   data = {
-    PGRST_DB_URI = base64encode(
-      "postgres://postgrest_admin:${var.postgres_password_postgrest}@host.docker.internal:5432/postgrest"
-    )
+    PGRST_DB_URI       = "postgres://postgrest_admin:${var.postgres_password_postgrest}@host.k3d.internal:${var.postgres_port}/postgrest"
+    PGRST_DB_ANON_ROLE = "web_anon"
+    PGRST_DB_SCHEMAS   = "public"
+    PGRST_SERVER_PORT  = "3000"
   }
 
   type = "Opaque"
+
+  depends_on = [
+    kubernetes_namespace.postgrest,
+    postgresql_role.postgrest_superuser,
+    postgresql_role.web_anon
+  ]
 }
 
+resource "kubernetes_deployment" "postgrest" {
+  metadata {
+    name      = "postgrest"
+    namespace = kubernetes_namespace.postgrest.metadata[0].name
+    labels = {
+      app = "postgrest"
+    }
+  }
+
+  spec {
+    replicas = 1
+
+    selector {
+      match_labels = {
+        app = "postgrest"
+      }
+    }
+
+    template {
+      metadata {
+        labels = {
+          app = "postgrest"
+        }
+      }
+
+      spec {
+        container {
+          name  = "postgrest"
+          image = "postgrest/postgrest:v14.1"
+
+          port {
+            container_port = 3000
+          }
+
+          env_from {
+            secret_ref {
+              name = kubernetes_secret.postgrest_db.metadata[0].name
+            }
+          }
+        }
+      }
+    }
+  }
+
+  depends_on = [kubernetes_secret.postgrest_db]
+}
+
+resource "kubernetes_service" "postgrest" {
+  metadata {
+    name      = "postgrest"
+    namespace = kubernetes_namespace.postgrest.metadata[0].name
+  }
+
+  spec {
+    selector = {
+      app = "postgrest"
+    }
+
+    port {
+      port        = 80
+      target_port = 3000
+    }
+  }
+
+  depends_on = [kubernetes_deployment.postgrest]
+}
+
+resource "kubernetes_ingress_v1" "postgrest" {
+  metadata {
+    name      = "postgrest"
+    namespace = kubernetes_namespace.postgrest.metadata[0].name
+  }
+
+  spec {
+    rule {
+      http {
+        path {
+          path      = "/"
+          path_type = "Prefix"
+
+          backend {
+            service {
+              name = kubernetes_service.postgrest.metadata[0].name
+              port {
+                number = 80
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  depends_on = [kubernetes_service.postgrest]
+}
+
+resource "kubernetes_job_v1" "seed_data" {
+  metadata {
+    name      = "seed-postgrest-data"
+    namespace = kubernetes_namespace.postgrest.metadata[0].name
+  }
+
+  spec {
+    backoff_limit = 3
+
+    template {
+      metadata {}
+
+      spec {
+        restart_policy = "Never"
+
+        container {
+          name  = "psql"
+          image = "postgres:16-alpine"
+
+          env {
+            name  = "PGPASSWORD"
+            value = var.postgres_password_postgrest
+          }
+
+          command = ["/bin/sh", "-c"]
+          args = [
+            <<-EOT
+            psql -h host.k3d.internal -p ${var.postgres_port} -U postgrest_admin -d postgrest <<'SQL'
+            CREATE TABLE IF NOT EXISTS public.todos (
+              id serial PRIMARY KEY,
+              task text NOT NULL,
+              done boolean NOT NULL DEFAULT false
+            );
+
+            INSERT INTO public.todos (task, done)
+            VALUES
+              ('finish pipekit take-home', false),
+              ('verify postgrest endpoint', true);
+
+            GRANT SELECT ON public.todos TO web_anon;
+            SQL
+            EOT
+          ]
+        }
+      }
+    }
+  }
+
+  depends_on = [
+    kubernetes_deployment.postgrest,
+    postgresql_grant.web_anon_schema_usage
+  ]
+}
