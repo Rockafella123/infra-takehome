@@ -28,4 +28,4 @@ http://localhost:8080/todos
 
 you should see the injected data:
 
-![Expected result](docs/postgrest-result.png)
+![Expected result](./docs/postgrest-result.png)
