@@ -12,20 +12,29 @@ The following tools must be installed:
 - Terraform or OpenTofu
 - git
 
-## Clone the repository
+## Clone the repository and run the infrastructure
 
 ```bash
 git clone <your-repo-url>
 cd <repo>/tofu
 terraform init
 terraform apply
+```
 
-Might need to rollout deployment:
+If the API does not immediately show the data, restart the PostgREST deployment:
+
+```bash
 kubectl rollout restart deployment/postgrest -n postgrest
+```
+
 Open the API endpoint in your browser:
 
+```
 http://localhost:8080/todos
+```
 
-you should see the injected data:
+You should see the injected data.
+
+## Expected result
 
 ![Expected result](./docs/postgrest-result.png)
