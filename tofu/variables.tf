@@ -17,6 +17,13 @@ variable "postgres_password" {
   sensitive   = true
 }
 
+variable "postgres_password_postgrest" {
+  description = "Password for the PostgREST user"
+  type        = string
+  default     = "postgrest"
+  sensitive   = true
+}
+
 variable "postgres_port" {
   description = "Host port to expose PostgreSQL on"
   type        = number

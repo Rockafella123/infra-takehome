@@ -59,3 +59,37 @@ resource "postgresql_database" "postgrest" {
   name       = "postgrest"
   depends_on = [docker_container.postgres]
 }
+
+resource "postgresql_role" "postgrest_superuser" {
+  name      = "postgrest_admin"
+  login     = true
+  password  = var.postgres_password_postgrest
+  superuser = true
+  depends_on = [postgresql_database.postgrest]
+}
+
+provider "kubernetes" {
+  config_path = "~/.kube/config"
+}
+
+resource "kubernetes_namespace" "postgrest" {
+  metadata {
+    name = "postgrest"
+  }
+}
+
+resource "kubernetes_secret" "postgrest_db" {
+  metadata {
+    name      = "postgrest-secret"
+    namespace = kubernetes_namespace.postgrest.metadata[0].name
+  }
+
+  data = {
+    PGRST_DB_URI = base64encode(
+      "postgres://postgrest_admin:${var.postgres_password_postgrest}@host.docker.internal:5432/postgrest"
+    )
+  }
+
+  type = "Opaque"
+}
+
